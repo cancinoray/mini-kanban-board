@@ -88,6 +88,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /auth/logout:
     post:
@@ -154,6 +156,8 @@ paths:
                 $ref: '#/components/schemas/Board'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /boards/{boardId}:
     patch:
@@ -183,6 +187,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
     delete:
       summary: Delete a board (cascades to its columns and cards)
       operationId: deleteBoard
@@ -244,6 +250,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /boards/{boardId}/columns/reorder:
     post:
@@ -274,10 +282,18 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Column'
+        '400':
+          description: orderedColumnIds does not match the board's current columns exactly
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /columns/{columnId}:
     patch:
@@ -330,7 +346,9 @@ paths:
         - $ref: '#/components/parameters/boardId'
       responses:
         '200':
-          description: Cards ordered by their `order` field within each column
+          description: >
+            All cards in the board's columns; each card carries its `columnId`
+            and its `order` within that column
           content:
             application/json:
               schema:
@@ -366,6 +384,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /cards/{cardId}:
     patch:
@@ -391,6 +411,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
     delete:
       summary: Delete a card
       operationId: deleteCard
@@ -442,6 +464,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
 
   /export:
     get:
@@ -521,6 +545,12 @@ components:
             $ref: '#/components/schemas/Error'
     NotFound:
       description: The referenced board, column, or card does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ValidationFailed:
+      description: The request body, path, or query parameters are not valid
       content:
         application/json:
           schema:
