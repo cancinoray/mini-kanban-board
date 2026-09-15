@@ -1,0 +1,676 @@
+openapi: 3.0.3
+info:
+  title: Mini Kanban Board API
+  description: >
+    Backend contract implied by the frontend's service interfaces
+    (frontend/src/services/KanbanService.ts and
+    frontend/src/services/AuthService.ts). The frontend currently ships with
+    localStorage-backed implementations of both (LocalStorageKanbanService and
+    MockAuthService), so it runs with no server; this spec describes the HTTP
+    API an equivalent server-backed implementation would need to expose.
+
+    Auth endpoints establish a session, and every board, column, and card
+    belongs to the signed-in user. The mock keeps accounts and the current
+    session in localStorage, including passwords in plain text — that is a
+    throwaway stand-in only. A real backend must hash passwords server-side
+    and keep the session identifier in an httpOnly cookie.
+  version: 1.1.0
+
+servers:
+  - url: /api
+
+security:
+  - sessionCookie: []
+
+paths:
+  /auth/register:
+    post:
+      summary: Create an account and start a session
+      operationId: register
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterInput'
+      responses:
+        '201':
+          description: Account created; the response sets the session cookie
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthUser'
+        '409':
+          description: An account already exists for this email
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: The email or password is not usable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/login:
+    post:
+      summary: Start a session for an existing account
+      operationId: login
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginInput'
+      responses:
+        '200':
+          description: Signed in; the response sets the session cookie
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthUser'
+        '401':
+          description: The email and password do not match an account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/logout:
+    post:
+      summary: End the current session
+      operationId: logout
+      tags: [Auth]
+      responses:
+        '204':
+          description: Session ended; the session cookie is cleared
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/me:
+    get:
+      summary: Get the signed-in user
+      operationId: getCurrentUser
+      tags: [Auth]
+      responses:
+        '200':
+          description: The signed-in user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /boards:
+    get:
+      summary: List the signed-in user's boards
+      operationId: listBoards
+      tags: [Boards]
+      responses:
+        '200':
+          description: Boards ordered by their `order` field
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Board'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      summary: Create a board
+      operationId: createBoard
+      tags: [Boards]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        '201':
+          description: Board created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Board'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /boards/{boardId}:
+    patch:
+      summary: Rename a board
+      operationId: renameBoard
+      tags: [Boards]
+      parameters:
+        - $ref: '#/components/parameters/boardId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        '200':
+          description: Board renamed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Board'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      summary: Delete a board (cascades to its columns and cards)
+      operationId: deleteBoard
+      tags: [Boards]
+      parameters:
+        - $ref: '#/components/parameters/boardId'
+      responses:
+        '204':
+          description: Board deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /boards/{boardId}/columns:
+    get:
+      summary: List columns for a board
+      operationId: listColumns
+      tags: [Columns]
+      parameters:
+        - $ref: '#/components/parameters/boardId'
+      responses:
+        '200':
+          description: Columns ordered by their `order` field
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Column'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      summary: Create a column on a board
+      operationId: createColumn
+      tags: [Columns]
+      parameters:
+        - $ref: '#/components/parameters/boardId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        '201':
+          description: Column created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Column'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /boards/{boardId}/columns/reorder:
+    post:
+      summary: Reorder all columns within a board
+      operationId: reorderColumns
+      tags: [Columns]
+      parameters:
+        - $ref: '#/components/parameters/boardId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderedColumnIds]
+              properties:
+                orderedColumnIds:
+                  type: array
+                  items:
+                    type: string
+                  description: Column IDs in their new order
+      responses:
+        '200':
+          description: Columns for the board, in their new order
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Column'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /columns/{columnId}:
+    patch:
+      summary: Rename a column
+      operationId: renameColumn
+      tags: [Columns]
+      parameters:
+        - $ref: '#/components/parameters/columnId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        '200':
+          description: Column renamed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Column'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      summary: Delete a column (cascades to its cards)
+      operationId: deleteColumn
+      tags: [Columns]
+      parameters:
+        - $ref: '#/components/parameters/columnId'
+      responses:
+        '204':
+          description: Column deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /boards/{boardId}/cards:
+    get:
+      summary: List cards across all columns of a board
+      operationId: listCards
+      tags: [Cards]
+      parameters:
+        - $ref: '#/components/parameters/boardId'
+      responses:
+        '200':
+          description: Cards ordered by their `order` field within each column
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Card'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /columns/{columnId}/cards:
+    post:
+      summary: Create a card in a column
+      operationId: createCard
+      tags: [Cards]
+      parameters:
+        - $ref: '#/components/parameters/columnId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewCardInput'
+      responses:
+        '201':
+          description: Card created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Card'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /cards/{cardId}:
+    patch:
+      summary: Update a card's fields
+      operationId: updateCard
+      tags: [Cards]
+      parameters:
+        - $ref: '#/components/parameters/cardId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCardInput'
+      responses:
+        '200':
+          description: Card updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Card'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      summary: Delete a card
+      operationId: deleteCard
+      tags: [Cards]
+      parameters:
+        - $ref: '#/components/parameters/cardId'
+      responses:
+        '204':
+          description: Card deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /cards/{cardId}/move:
+    post:
+      summary: Move a card to a (possibly different) column and position
+      operationId: moveCard
+      tags: [Cards]
+      parameters:
+        - $ref: '#/components/parameters/cardId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [toColumnId, toIndex]
+              properties:
+                toColumnId:
+                  type: string
+                toIndex:
+                  type: integer
+                  minimum: 0
+                  description: Zero-based position of the card within the destination column
+      responses:
+        '200':
+          description: >
+            All cards belonging to the source and destination columns
+            (a single column's cards if the move is within the same column),
+            reflecting their updated order
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Card'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /export:
+    get:
+      summary: Export all boards, columns, and cards
+      operationId: exportData
+      tags: [Data]
+      responses:
+        '200':
+          description: Full snapshot of the signed-in user's stored data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KanbanExport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /import:
+    post:
+      summary: Replace all stored data with an imported snapshot
+      operationId: importData
+      tags: [Data]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KanbanExport'
+      responses:
+        '204':
+          description: Data imported
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: The snapshot is not a readable export
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: session
+      description: >
+        Session established by /auth/register or /auth/login. The frontend's
+        MockAuthService keeps an equivalent session identifier in localStorage;
+        a real backend must set this as an httpOnly cookie.
+
+  parameters:
+    boardId:
+      name: boardId
+      in: path
+      required: true
+      schema:
+        type: string
+    columnId:
+      name: columnId
+      in: path
+      required: true
+      schema:
+        type: string
+    cardId:
+      name: cardId
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    Unauthorized:
+      description: No session, or the session no longer identifies a user
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The referenced board, column, or card does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+
+    AuthUser:
+      type: object
+      required: [id, name, email]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+
+    RegisterInput:
+      type: object
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          minLength: 8
+
+    LoginInput:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    Board:
+      type: object
+      required: [id, name, order]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        order:
+          type: integer
+
+    Column:
+      type: object
+      required: [id, boardId, name, order]
+      properties:
+        id:
+          type: string
+        boardId:
+          type: string
+        name:
+          type: string
+        order:
+          type: integer
+
+    Card:
+      type: object
+      required: [id, columnId, title, description, dueDate, tags, order, archived]
+      properties:
+        id:
+          type: string
+        columnId:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        order:
+          type: integer
+        archived:
+          type: boolean
+
+    NewCardInput:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+
+    UpdateCardInput:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        dueDate:
+          type: string
+          format: date-time
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        archived:
+          type: boolean
+
+    KanbanExport:
+      type: object
+      required: [boards, columns, cards, exportedAt]
+      properties:
+        boards:
+          type: array
+          items:
+            $ref: '#/components/schemas/Board'
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/Column'
+        cards:
+          type: array
+          items:
+            $ref: '#/components/schemas/Card'
+        exportedAt:
+          type: string
+          format: date-time
