@@ -55,6 +55,7 @@ function Field({ id, label, type, value, autoComplete, onChange, hint }: FieldPr
 export function AuthPage() {
   const signIn = useAuthStore((s) => s.signIn)
   const register = useAuthStore((s) => s.register)
+  const sessionExpired = useAuthStore((s) => s.sessionExpired)
 
   const [mode, setMode] = useState<Mode>('sign-in')
   const [name, setName] = useState('')
@@ -157,6 +158,12 @@ export function AuthPage() {
               noValidate
               className="mt-3 rounded-md border border-border bg-surface p-3"
             >
+              {sessionExpired && (
+                <p role="status" className="mb-3 text-[12px] text-text-secondary">
+                  Your session expired. Sign in again.
+                </p>
+              )}
+
               {isRegister && (
                 <Field
                   id="auth-name"

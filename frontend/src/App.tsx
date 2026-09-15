@@ -5,6 +5,7 @@ import { BoardView } from './components/BoardView'
 import { BrandMark } from './components/BrandMark'
 import { DarkModeToggle } from './components/DarkModeToggle'
 import { TopBar } from './components/TopBar'
+import { onSessionExpired } from './services'
 import { useAuthStore } from './store/useAuthStore'
 import { useKanbanStore } from './store/useKanbanStore'
 
@@ -12,6 +13,7 @@ function App() {
   const authStatus = useAuthStore((s) => s.status)
   const user = useAuthStore((s) => s.user)
   const initAuth = useAuthStore((s) => s.init)
+  const expireSession = useAuthStore((s) => s.expireSession)
 
   const init = useKanbanStore((s) => s.init)
   const reset = useKanbanStore((s) => s.reset)
@@ -25,6 +27,10 @@ function App() {
   useEffect(() => {
     initAuth()
   }, [initAuth])
+
+  // Board calls are what notice a dead session. When one does, the user goes
+  // back to sign-in rather than being left on a board that cannot save.
+  useEffect(() => onSessionExpired(expireSession), [expireSession])
 
   // Boards belong to whoever is signed in: load them on sign-in, drop them on sign-out.
   useEffect(() => {

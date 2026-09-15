@@ -1,7 +1,9 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { act } from 'react'
 import { beforeEach, describe, expect, it } from 'vitest'
 import App from './App'
+import { notifySessionExpired } from './services'
 import { LocalStorageKanbanService } from './services/localStorageKanbanService'
 import { MockAuthService } from './services/mockAuthService'
 import { useAuthStore } from './store/useAuthStore'
@@ -12,7 +14,7 @@ describe('App', () => {
     localStorage.clear()
     const auth = new MockAuthService({ usersKey: 'test:app:users', sessionKey: 'test:app:session' })
     const user = await auth.register({ name: 'Ray', email: 'ray@example.com', password: 'password123' })
-    useAuthStore.setState({ service: auth, user, status: 'ready' })
+    useAuthStore.setState({ service: auth, user, status: 'ready', sessionExpired: false })
     useKanbanStore.setState({
       service: new LocalStorageKanbanService({ storageKey: 'test:app' }),
       boards: [],
@@ -40,6 +42,17 @@ describe('App', () => {
 
     expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument()
+  })
+
+  it('returns to sign-in with an explanation when the session expires', async () => {
+    render(<App />)
+    await screen.findByText('Create your first board to get started')
+
+    act(() => notifySessionExpired())
+
+    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument()
+    expect(screen.getByText('Your session expired. Sign in again.')).toBeInTheDocument()
+    expect(useAuthStore.getState().user).toBeNull()
   })
 
   it('lets the user create the first board and then add a column and a card', async () => {
