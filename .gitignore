@@ -1,0 +1,18 @@
+# Repo-wide noise. The frontend and backend trees each keep their own ignore
+# file for the build output they generate; this covers what neither can see.
+
+# macOS
+.DS_Store
+
+# Editors and IDEs. Ignore the contents rather than the directory itself, so the
+# frontend's `!.vscode/extensions.json` exception still takes effect — git never
+# descends into an excluded directory, so nothing inside it could be re-included.
+**/.idea/*
+**/.vscode/*
+
+# Logs
+*.log
+
+# Python caches (pytest, bytecode) — `make clean` treats these as build output
+__pycache__/
+.pytest_cache/
