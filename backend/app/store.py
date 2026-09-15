@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from app.models import Board, Card, Column, normalize_email
+from fastapi import Depends
+from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
+
+from app.database import get_session
+from app.models import Board, Card, Column, KanbanExport, normalize_email
+from app.tables import BoardRow, CardRow, ColumnRow, SessionRow, UserRow
 
 
 def new_id() -> str:
@@ -19,88 +26,251 @@ class User:
     hashed_password: str
 
 
-@dataclass
+def _as_utc(value: datetime | None) -> datetime | None:
+    """SQLite drops timezone info; other engines keep it. Normalize on read so
+    the API always reports UTC-aware timestamps."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _to_user(row: UserRow) -> User:
+    return User(id=row.id, name=row.name, email=row.email, hashed_password=row.hashed_password)
+
+
+def _to_board(row: BoardRow) -> Board:
+    return Board(id=row.id, name=row.name, order=row.position)
+
+
+def _to_column(row: ColumnRow) -> Column:
+    return Column(id=row.id, boardId=row.board_id, name=row.name, order=row.position)
+
+
+def _to_card(row: CardRow) -> Card:
+    return Card(
+        id=row.id,
+        columnId=row.column_id,
+        title=row.title,
+        description=row.description,
+        dueDate=_as_utc(row.due_date),
+        tags=list(row.tags),
+        order=row.position,
+        archived=row.archived,
+    )
+
+
+# Request-model field names -> ORM attribute names (only `dueDate` differs).
+_CARD_FIELDS = {
+    "title": "title",
+    "description": "description",
+    "dueDate": "due_date",
+    "tags": "tags",
+    "archived": "archived",
+}
+
+
 class Store:
-    """In-memory data store. One instance per running app (or per test)."""
+    """Database-backed data store. One instance per request, wrapping a
+    SQLAlchemy session; every mutating method commits before returning."""
 
-    users: dict[str, User] = field(default_factory=dict)
-    users_by_email: dict[str, str] = field(default_factory=dict)
-    sessions: dict[str, str] = field(default_factory=dict)
-
-    boards: dict[str, Board] = field(default_factory=dict)
-    columns: dict[str, Column] = field(default_factory=dict)
-    cards: dict[str, Card] = field(default_factory=dict)
-    board_owners: dict[str, str] = field(default_factory=dict)
+    def __init__(self, session: Session) -> None:
+        self._session = session
 
     # --- accounts ----------------------------------------------------------
 
     def user_by_email(self, email: str) -> User | None:
-        user_id = self.users_by_email.get(normalize_email(email))
-        return self.users.get(user_id) if user_id else None
+        row = self._session.scalar(
+            select(UserRow).where(UserRow.email == normalize_email(email))
+        )
+        return _to_user(row) if row is not None else None
+
+    def get_user(self, user_id: str) -> User | None:
+        row = self._session.get(UserRow, user_id)
+        return _to_user(row) if row is not None else None
 
     def create_user(self, name: str, email: str, hashed_password: str) -> User:
-        user = User(
+        row = UserRow(
             id=new_id(),
             name=name,
             email=normalize_email(email),
             hashed_password=hashed_password,
         )
-        self.users[user.id] = user
-        self.users_by_email[user.email] = user.id
-        return user
+        self._session.add(row)
+        self._session.commit()
+        return _to_user(row)
+
+    # --- sessions ----------------------------------------------------------
+
+    def create_session(self, session_id: str, user_id: str) -> None:
+        self._session.add(SessionRow(id=session_id, user_id=user_id))
+        self._session.commit()
+
+    def session_user_id(self, session_id: str) -> str | None:
+        row = self._session.get(SessionRow, session_id)
+        return row.user_id if row is not None else None
+
+    def delete_session(self, session_id: str) -> None:
+        self._session.execute(delete(SessionRow).where(SessionRow.id == session_id))
+        self._session.commit()
 
     # --- ownership helpers -------------------------------------------------
 
     def owns_board(self, board_id: str, user_id: str) -> bool:
-        return self.board_owners.get(board_id) == user_id
+        return (
+            self._session.scalar(
+                select(BoardRow.id).where(
+                    BoardRow.id == board_id, BoardRow.owner_id == user_id
+                )
+            )
+            is not None
+        )
 
     def owns_column(self, column_id: str, user_id: str) -> bool:
-        column = self.columns.get(column_id)
-        return column is not None and self.owns_board(column.boardId, user_id)
+        return (
+            self._session.scalar(
+                select(ColumnRow.id)
+                .join(BoardRow, ColumnRow.board_id == BoardRow.id)
+                .where(ColumnRow.id == column_id, BoardRow.owner_id == user_id)
+            )
+            is not None
+        )
 
     def owns_card(self, card_id: str, user_id: str) -> bool:
-        card = self.cards.get(card_id)
-        return card is not None and self.owns_column(card.columnId, user_id)
+        return (
+            self._session.scalar(
+                select(CardRow.id)
+                .join(ColumnRow, CardRow.column_id == ColumnRow.id)
+                .join(BoardRow, ColumnRow.board_id == BoardRow.id)
+                .where(CardRow.id == card_id, BoardRow.owner_id == user_id)
+            )
+            is not None
+        )
+
+    # --- queries -----------------------------------------------------------
 
     def boards_for_user(self, user_id: str) -> list[Board]:
-        boards = [b for b in self.boards.values() if self.owns_board(b.id, user_id)]
-        return sorted(boards, key=lambda b: b.order)
+        rows = self._session.scalars(
+            select(BoardRow)
+            .where(BoardRow.owner_id == user_id)
+            .order_by(BoardRow.position)
+        ).all()
+        return [_to_board(row) for row in rows]
 
     def columns_for_board(self, board_id: str) -> list[Column]:
-        columns = [c for c in self.columns.values() if c.boardId == board_id]
-        return sorted(columns, key=lambda c: c.order)
+        rows = self._session.scalars(
+            select(ColumnRow)
+            .where(ColumnRow.board_id == board_id)
+            .order_by(ColumnRow.position)
+        ).all()
+        return [_to_column(row) for row in rows]
 
     def cards_for_board(self, board_id: str) -> list[Card]:
-        column_ids = {c.id for c in self.columns.values() if c.boardId == board_id}
-        cards = [c for c in self.cards.values() if c.columnId in column_ids]
-        return sorted(cards, key=lambda c: c.order)
+        rows = self._session.scalars(
+            select(CardRow)
+            .join(ColumnRow, CardRow.column_id == ColumnRow.id)
+            .where(ColumnRow.board_id == board_id)
+            .order_by(CardRow.position)
+        ).all()
+        return [_to_card(row) for row in rows]
 
     def cards_for_column(self, column_id: str) -> list[Card]:
-        cards = [c for c in self.cards.values() if c.columnId == column_id]
-        return sorted(cards, key=lambda c: c.order)
+        return [_to_card(row) for row in self._card_rows_for_column(column_id)]
 
     def cards_for_user(self, user_id: str) -> list[Card]:
-        board_ids = {b.id for b in self.boards_for_user(user_id)}
-        column_ids = {c.id for c in self.columns.values() if c.boardId in board_ids}
-        return [c for c in self.cards.values() if c.columnId in column_ids]
+        rows = self._session.scalars(
+            select(CardRow)
+            .join(ColumnRow, CardRow.column_id == ColumnRow.id)
+            .join(BoardRow, ColumnRow.board_id == BoardRow.id)
+            .where(BoardRow.owner_id == user_id)
+            .order_by(CardRow.position)
+        ).all()
+        return [_to_card(row) for row in rows]
 
-    # --- factory helpers -----------------------------------------------
+    def _card_rows_for_column(self, column_id: str) -> list[CardRow]:
+        return list(
+            self._session.scalars(
+                select(CardRow)
+                .where(CardRow.column_id == column_id)
+                .order_by(CardRow.position)
+            ).all()
+        )
+
+    # --- board mutations ---------------------------------------------------
 
     def create_board(self, user_id: str, name: str) -> Board:
-        board = Board(id=new_id(), name=name, order=len(self.boards_for_user(user_id)))
-        self.boards[board.id] = board
-        self.board_owners[board.id] = user_id
-        return board
+        row = BoardRow(
+            id=new_id(),
+            owner_id=user_id,
+            name=name,
+            position=self._next_position(BoardRow, BoardRow.owner_id == user_id),
+        )
+        self._session.add(row)
+        self._session.commit()
+        return _to_board(row)
+
+    def rename_board(self, board_id: str, name: str) -> Board:
+        row = self._session.get(BoardRow, board_id)
+        assert row is not None
+        row.name = name
+        self._session.commit()
+        return _to_board(row)
+
+    def delete_board(self, board_id: str) -> None:
+        column_ids = list(
+            self._session.scalars(
+                select(ColumnRow.id).where(ColumnRow.board_id == board_id)
+            ).all()
+        )
+        if column_ids:
+            self._session.execute(
+                delete(CardRow).where(CardRow.column_id.in_(column_ids))
+            )
+            self._session.execute(
+                delete(ColumnRow).where(ColumnRow.id.in_(column_ids))
+            )
+        self._session.execute(delete(BoardRow).where(BoardRow.id == board_id))
+        self._session.commit()
+
+    # --- column mutations --------------------------------------------------
 
     def create_column(self, board_id: str, name: str) -> Column:
-        column = Column(
+        row = ColumnRow(
             id=new_id(),
-            boardId=board_id,
+            board_id=board_id,
             name=name,
-            order=len(self.columns_for_board(board_id)),
+            position=self._next_position(ColumnRow, ColumnRow.board_id == board_id),
         )
-        self.columns[column.id] = column
-        return column
+        self._session.add(row)
+        self._session.commit()
+        return _to_column(row)
+
+    def rename_column(self, column_id: str, name: str) -> Column:
+        row = self._session.get(ColumnRow, column_id)
+        assert row is not None
+        row.name = name
+        self._session.commit()
+        return _to_column(row)
+
+    def reorder_columns(self, board_id: str, ordered_column_ids: list[str]) -> list[Column]:
+        rows = {
+            row.id: row
+            for row in self._session.scalars(
+                select(ColumnRow).where(ColumnRow.board_id == board_id)
+            ).all()
+        }
+        for index, column_id in enumerate(ordered_column_ids):
+            rows[column_id].position = index
+        self._session.commit()
+        return self.columns_for_board(board_id)
+
+    def delete_column(self, column_id: str) -> None:
+        self._session.execute(delete(CardRow).where(CardRow.column_id == column_id))
+        self._session.execute(delete(ColumnRow).where(ColumnRow.id == column_id))
+        self._session.commit()
+
+    # --- card mutations ----------------------------------------------------
 
     def create_card(
         self,
@@ -111,18 +281,133 @@ class Store:
         tags: list[str] | None = None,
         archived: bool = False,
     ) -> Card:
-        card = Card(
+        row = CardRow(
             id=new_id(),
-            columnId=column_id,
+            column_id=column_id,
             title=title,
             description=description,
-            dueDate=due_date,
+            due_date=due_date,
             tags=tags or [],
-            order=len(self.cards_for_column(column_id)),
+            position=self._next_position(CardRow, CardRow.column_id == column_id),
             archived=archived,
         )
-        self.cards[card.id] = card
-        return card
+        self._session.add(row)
+        self._session.commit()
+        return _to_card(row)
+
+    def update_card(self, card_id: str, updates: dict[str, object]) -> Card:
+        row = self._session.get(CardRow, card_id)
+        assert row is not None
+        for field, value in updates.items():
+            setattr(row, _CARD_FIELDS[field], value)
+        self._session.commit()
+        return _to_card(row)
+
+    def delete_card(self, card_id: str) -> None:
+        self._session.execute(delete(CardRow).where(CardRow.id == card_id))
+        self._session.commit()
+
+    def move_card(self, card_id: str, to_column_id: str, to_index: int) -> list[Card]:
+        card = self._session.get(CardRow, card_id)
+        assert card is not None
+        source_column_id = card.column_id
+
+        dest_rows = [
+            row for row in self._card_rows_for_column(to_column_id) if row.id != card_id
+        ]
+        index = max(0, min(to_index, len(dest_rows)))
+        dest_rows.insert(index, card)
+
+        source_rows: list[CardRow] = []
+        if source_column_id != to_column_id:
+            source_rows = [
+                row
+                for row in self._card_rows_for_column(source_column_id)
+                if row.id != card_id
+            ]
+
+        for position, row in enumerate(dest_rows):
+            row.column_id = to_column_id
+            row.position = position
+        for position, row in enumerate(source_rows):
+            row.position = position
+        self._session.commit()
+
+        ordered = source_rows + dest_rows if source_column_id != to_column_id else dest_rows
+        return [_to_card(row) for row in ordered]
+
+    # --- bulk import -------------------------------------------------------
+
+    def replace_user_data(self, user_id: str, payload: KanbanExport) -> None:
+        """Replace only the current user's data, cascading the delete down to
+        that user's columns and cards before inserting the imported snapshot."""
+        board_ids = list(
+            self._session.scalars(
+                select(BoardRow.id).where(BoardRow.owner_id == user_id)
+            ).all()
+        )
+        if board_ids:
+            column_ids = list(
+                self._session.scalars(
+                    select(ColumnRow.id).where(ColumnRow.board_id.in_(board_ids))
+                ).all()
+            )
+            if column_ids:
+                self._session.execute(
+                    delete(CardRow).where(CardRow.column_id.in_(column_ids))
+                )
+                self._session.execute(
+                    delete(ColumnRow).where(ColumnRow.id.in_(column_ids))
+                )
+            self._session.execute(delete(BoardRow).where(BoardRow.id.in_(board_ids)))
+
+        for board in payload.boards:
+            self._session.add(
+                BoardRow(
+                    id=board.id,
+                    owner_id=user_id,
+                    name=board.name,
+                    position=board.order,
+                )
+            )
+        for column in payload.columns:
+            self._session.add(
+                ColumnRow(
+                    id=column.id,
+                    board_id=column.boardId,
+                    name=column.name,
+                    position=column.order,
+                )
+            )
+        for card in payload.cards:
+            self._session.add(
+                CardRow(
+                    id=card.id,
+                    column_id=card.columnId,
+                    title=card.title,
+                    description=card.description,
+                    due_date=card.dueDate,
+                    tags=card.tags,
+                    position=card.order,
+                    archived=card.archived,
+                )
+            )
+        self._session.commit()
+
+    # --- internals ---------------------------------------------------------
+
+    def _next_position(self, model: type, *filters: ColumnElement[bool]) -> int:
+        count = self._session.scalar(
+            select(func.count()).select_from(model).where(*filters)
+        )
+        return int(count or 0)
+
+
+def seed_if_empty(session: Session) -> None:
+    """Seed the demo account once, on a database that has no users yet."""
+    if session.scalar(select(UserRow.id).limit(1)) is not None:
+        return
+    seed(Store(session))
 
 
 def seed(store: Store) -> None:
@@ -180,13 +465,6 @@ def _seed_password_hash() -> str:
     return hash_password("demo")
 
 
-_default_store: Store | None = None
-
-
-def get_store() -> Store:
-    """FastAPI dependency. Overridden in tests to isolate state."""
-    global _default_store
-    if _default_store is None:
-        _default_store = Store()
-        seed(_default_store)
-    return _default_store
+def get_store(session: Session = Depends(get_session)) -> Store:
+    """FastAPI dependency. Tests override `get_session` to isolate state."""
+    return Store(session)

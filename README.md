@@ -53,7 +53,9 @@ backend/
   app/
     main.py        FastAPI app, CORS, mounting the /api router
     auth.py        password hashing, the session cookie, current-user dependencies
-    store.py       the in-memory store, and the demo seed
+    database.py    engine and session factory, configured from an env var
+    tables.py      SQLAlchemy ORM tables
+    store.py       the database-backed store, and the demo seed
     models.py      pydantic request/response models
     routers/       auth, boards, columns, cards, data
   tests/           pytest suite
@@ -111,6 +113,7 @@ Everything is wrapped in the `Makefile`; run `make` or `make help` to list it.
 | `VITE_API_TARGET`      | frontend dev server | `http://127.0.0.1:8000` | where the dev server proxies `/api` to                  |
 | `API_PORT`             | Makefile            | `8000`                  | port the dev backend listens on                         |
 | `KANBAN_COOKIE_SECURE` | backend             | off                     | set to `1` over HTTPS so the session cookie is `Secure` |
+| `KANBAN_DATABASE_URL`  | backend             | `sqlite:///./kanban.db` | SQLAlchemy URL of the database to connect to            |
 
 ## API
 
@@ -121,15 +124,18 @@ at `/openapi.json`.
 
 ## Tests
 
-`make test` runs both suites. Neither needs a running server or a database: the backend
-drives the app in-process, and the frontend tests either inject the mock services or stub
-`fetch`.
+`make test` runs both suites. Neither needs a running server: the backend
+drives the app in-process against a throwaway SQLite file per test, and the
+frontend tests either inject the mock services or stub `fetch`.
 
 ## Data
 
-The backend keeps everything in memory, so restarting it loses every board. Export to JSON
-from the top bar before you stop it, and import to bring it back. Durable storage is not
-implemented yet.
+Everything is stored in a database, configured with `KANBAN_DATABASE_URL`.
+The default is a local SQLite file (`backend/kanban.db`); pointing the variable
+at another SQLAlchemy URL (for example `postgresql+psycopg://...`) switches
+engines without any code changes. On first run the server creates the tables
+and seeds the demo account. Export to JSON and import are still available for
+backups and moving data between instances.
 
 ## Documentation
 

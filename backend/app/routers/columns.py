@@ -49,11 +49,7 @@ def reorder_columns(
             detail="orderedColumnIds must match the board's current columns exactly",
         )
 
-    for index, column_id in enumerate(payload.orderedColumnIds):
-        column = existing[column_id]
-        store.columns[column_id] = column.model_copy(update={"order": index})
-
-    return store.columns_for_board(board_id)
+    return store.reorder_columns(board_id, payload.orderedColumnIds)
 
 
 @router.patch("/columns/{column_id}", response_model=Column)
@@ -65,10 +61,7 @@ def rename_column(
 ) -> Column:
     if not store.owns_column(column_id, user_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Column not found")
-    column = store.columns[column_id]
-    updated = column.model_copy(update={"name": payload.name})
-    store.columns[column_id] = updated
-    return updated
+    return store.rename_column(column_id, payload.name)
 
 
 @router.delete("/columns/{column_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -80,7 +73,4 @@ def delete_column(
     if not store.owns_column(column_id, user_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Column not found")
 
-    for card_id in [c.id for c in store.cards.values() if c.columnId == column_id]:
-        del store.cards[card_id]
-
-    del store.columns[column_id]
+    store.delete_column(column_id)

@@ -35,10 +35,7 @@ def rename_board(
 ) -> Board:
     if not store.owns_board(board_id, user_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
-    board = store.boards[board_id]
-    updated = board.model_copy(update={"name": payload.name})
-    store.boards[board_id] = updated
-    return updated
+    return store.rename_board(board_id, payload.name)
 
 
 @router.delete("/{board_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -50,11 +47,4 @@ def delete_board(
     if not store.owns_board(board_id, user_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
 
-    column_ids = {c.id for c in store.columns.values() if c.boardId == board_id}
-    for card_id in [c.id for c in store.cards.values() if c.columnId in column_ids]:
-        del store.cards[card_id]
-    for column_id in column_ids:
-        del store.columns[column_id]
-
-    del store.boards[board_id]
-    del store.board_owners[board_id]
+    store.delete_board(board_id)

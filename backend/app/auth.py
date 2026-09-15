@@ -36,7 +36,7 @@ def get_current_session_id(
     session_id: str | None = Depends(session_cookie),
     store: Store = Depends(get_store),
 ) -> str:
-    if not session_id or session_id not in store.sessions:
+    if not session_id or store.session_user_id(session_id) is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No active session")
     return session_id
 
@@ -45,4 +45,7 @@ def get_current_user_id(
     session_id: str = Depends(get_current_session_id),
     store: Store = Depends(get_store),
 ) -> str:
-    return store.sessions[session_id]
+    user_id = store.session_user_id(session_id)
+    if user_id is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No active session")
+    return user_id

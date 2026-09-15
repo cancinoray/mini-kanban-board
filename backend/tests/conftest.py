@@ -1,28 +1,51 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session, sessionmaker
 
-from app.main import app
-from app.store import Store, get_store
+# The app's own engine is never used by the tests (they override get_session),
+# but keep it off any real database file in case importing the app opens one.
+os.environ["KANBAN_DATABASE_URL"] = "sqlite://"
+
+from app.database import Base, create_db_engine, get_session  # noqa: E402
+from app.main import app  # noqa: E402
+from app.store import Store  # noqa: E402
 
 PASSWORD = "hunter2000"
 
 
 @pytest.fixture
-def store() -> Store:
-    """A fresh, unseeded store for each test."""
-    return Store()
+def session_factory(tmp_path) -> Iterator[sessionmaker[Session]]:
+    """A fresh database per test. It lives on disk (rather than in memory) so
+    the test's own session and the app's per-request sessions can share it."""
+    engine = create_db_engine(f"sqlite:///{tmp_path / 'kanban.db'}")
+    Base.metadata.create_all(engine)
+    yield sessionmaker(bind=engine, expire_on_commit=False)
+    engine.dispose()
 
 
 @pytest.fixture
-def client(store: Store) -> Iterator[TestClient]:
-    app.dependency_overrides[get_store] = lambda: store
+def store(session_factory: sessionmaker[Session]) -> Iterator[Store]:
+    """A store against the same database the client writes to, for asserting on
+    rows the API does not expose."""
+    with session_factory() as session:
+        yield Store(session)
+
+
+@pytest.fixture
+def client(session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
+    def override_get_session() -> Iterator[Session]:
+        with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
     with TestClient(app) as test_client:
         yield test_client
-    app.dependency_overrides.pop(get_store, None)
+    app.dependency_overrides.pop(get_session, None)
 
 
 @pytest.fixture

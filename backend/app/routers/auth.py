@@ -23,7 +23,7 @@ def to_auth_user(user: User) -> AuthUser:
 
 def start_session(response: Response, store: Store, user_id: str) -> None:
     session_id = generate_session_id()
-    store.sessions[session_id] = user_id
+    store.create_session(session_id, user_id)
     response.set_cookie(
         key=SESSION_COOKIE,
         value=session_id,
@@ -78,7 +78,7 @@ def logout(
     session_id: str = Depends(get_current_session_id),
     store: Store = Depends(get_store),
 ) -> None:
-    store.sessions.pop(session_id, None)
+    store.delete_session(session_id)
     response.delete_cookie(key=SESSION_COOKIE, path="/")
 
 
@@ -87,4 +87,6 @@ def read_current_user(
     user_id: str = Depends(get_current_user_id),
     store: Store = Depends(get_store),
 ) -> AuthUser:
-    return to_auth_user(store.users[user_id])
+    user = store.get_user(user_id)
+    assert user is not None
+    return to_auth_user(user)

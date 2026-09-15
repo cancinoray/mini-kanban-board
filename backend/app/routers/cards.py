@@ -47,11 +47,8 @@ def update_card(
 ) -> Card:
     if not store.owns_card(card_id, user_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
-    card = store.cards[card_id]
     updates = payload.model_dump(exclude_unset=True)
-    updated = card.model_copy(update=updates)
-    store.cards[card_id] = updated
-    return updated
+    return store.update_card(card_id, updates)
 
 
 @router.delete("/cards/{card_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -62,7 +59,7 @@ def delete_card(
 ) -> None:
     if not store.owns_card(card_id, user_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
-    del store.cards[card_id]
+    store.delete_card(card_id)
 
 
 @router.post("/cards/{card_id}/move", response_model=list[Card])
@@ -77,23 +74,4 @@ def move_card(
     if not store.owns_column(payload.toColumnId, user_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Destination column not found")
 
-    card = store.cards[card_id]
-    source_column_id = card.columnId
-    dest_column_id = payload.toColumnId
-
-    dest_cards = [c for c in store.cards_for_column(dest_column_id) if c.id != card_id]
-    to_index = max(0, min(payload.toIndex, len(dest_cards)))
-    dest_cards.insert(to_index, card)
-
-    for index, c in enumerate(dest_cards):
-        store.cards[c.id] = c.model_copy(update={"columnId": dest_column_id, "order": index})
-
-    if source_column_id != dest_column_id:
-        source_cards = [c for c in store.cards_for_column(source_column_id) if c.id != card_id]
-        for index, c in enumerate(source_cards):
-            store.cards[c.id] = c.model_copy(update={"order": index})
-
-    result = store.cards_for_column(dest_column_id)
-    if source_column_id != dest_column_id:
-        result = store.cards_for_column(source_column_id) + result
-    return result
+    return store.move_card(card_id, payload.toColumnId, payload.toIndex)

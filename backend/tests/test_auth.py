@@ -108,7 +108,8 @@ def test_login_is_case_insensitive_on_email(client: TestClient) -> None:
 def test_passwords_are_hashed_not_stored_in_plaintext(client: TestClient, store) -> None:
     client.post("/api/auth/register", json=CREDENTIALS)
 
-    user = next(u for u in store.users.values() if u.email == "bob@example.com")
+    user = store.user_by_email("bob@example.com")
+    assert user is not None
     assert user.hashed_password != PASSWORD
     assert user.hashed_password.startswith("$2b$")
 
